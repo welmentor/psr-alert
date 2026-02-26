@@ -1,78 +1,76 @@
 import os
 import time
 import requests
+import praw
 from flask import Flask
 from threading import Thread
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-SUBREDDIT = "PhotoshopRequest"
-CHECK_INTERVAL = 20  # seconds
+reddit = praw.Reddit(
+    client_id=os.environ.get("REDDIT_CLIENT_ID"),
+    client_secret=os.environ.get("REDDIT_CLIENT_SECRET"),
+    user_agent="psr-alert"
+)
 
-last_seen = None
+subreddit = reddit.subreddit("PhotoshopRequest")
 
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "PSR Alert Running"
+seen_posts = set()
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False
     }
     requests.post(url, data=payload)
 
 def monitor():
-    global last_seen
-
+    print("Monitoring Reddit...")
     while True:
         try:
-            url = f"https://www.reddit.com/r/{SUBREDDIT}/new.json?limit=5"
-            headers = {"User-Agent": "PSRAlertBot"}
-
-            res = requests.get(url, headers=headers)
-            data = res.json()
-
-            posts = data["data"]["children"]
-
-            for post in reversed(posts):
-                p = post["data"]
-
-                post_id = p["id"]
-                flair = p.get("link_flair_text")
-
-                if last_seen is None:
-                    last_seen = post_id
+            for post in subreddit.new(limit=20):
+                if post.id in seen_posts:
                     continue
 
-                if post_id == last_seen:
+                flair = (post.link_flair_text or "").lower()
+                title = (post.title or "").lower()
+
+                if "paid" not in flair and "paid" not in title:
                     continue
 
-                last_seen = post_id
+                seen_posts.add(post.id)
 
-                # 🔥 FILTER ONLY PAID POSTS
-                if flair != "Paid":
-                    continue
+                message = f"""
+💰 <b>Paid Request Found</b>
 
-                title = p["title"]
-                link = f"https://reddit.com{p['permalink']}"
+📝 {post.title}
 
-                msg = f"💰 <b>PAID Request Posted</b>\n\n{title}\n\n{link}"
-                send_telegram(msg)
+🔖 Flair: {post.link_flair_text}
+
+🔗 https://reddit.com{post.permalink}
+"""
+                send_telegram(message)
 
         except Exception as e:
             print("Error:", e)
 
-        time.sleep(CHECK_INTERVAL)
+        time.sleep(20)
 
-def start_monitor():
-    Thread(target=monitor).start()
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Running"
+
+def run():
+    monitor()
+
+Thread(target=run).start()
 
 if __name__ == "__main__":
-    start_monitor()
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)

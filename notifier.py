@@ -1,65 +1,63 @@
-import os
 import time
 import requests
-import praw
+import os
+import random
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
 
 load_dotenv()
-
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
-REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not all([REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
-    print("❌ Missing values in .env file")
-    exit()
+app = Flask(__name__)
 
-reddit = praw.Reddit(
-    client_id=REDDIT_CLIENT_ID,
-    client_secret=REDDIT_CLIENT_SECRET,
-    user_agent=REDDIT_USER_AGENT,
-)
+@app.route("/")
+def home():
+    return "PSR Alert running"
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
-    except Exception as e:
-        print("Telegram error:", e)
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
-subreddit = reddit.subreddit("PhotoshopRequest")
+def monitor():
+    URL = "https://www.reddit.com/r/PhotoshopRequest/new/.json"
+    headers = {"User-Agent": f"PSRalert-{random.randint(1,99999)}"}
+    last_seen = None
 
-print("✅ Monitoring new posts in r/PhotoshopRequest...")
+    print("Monitoring Reddit...")
 
-last_seen = None
+    while True:
+        try:
+            response = requests.get(
+                URL,
+                headers=headers,
+                params={"limit":1, "raw_json":1, "_": time.time()}
+            )
+            data = response.json()
+            post = data["data"]["children"][0]["data"]
+            post_id = post["id"]
 
-while True:
-    try:
-        for post in subreddit.new(limit=1):
-
-            # first run: just store latest post id
             if last_seen is None:
-                last_seen = post.id
-                print("Initialized with latest post:", post.title)
+                last_seen = post_id
+                print("Initialized with:", post["title"])
 
-            # new post detected
-            elif post.id != last_seen:
-                last_seen = post.id
-
-                message = (
-                    f"🆕 New PhotoshopRequest post\n\n"
-                    f"{post.title}\n"
-                    f"https://reddit.com{post.permalink}"
-                )
-
+            elif post_id != last_seen:
+                last_seen = post_id
+                link = "https://reddit.com" + post["permalink"]
+                message = f"🆕 New PhotoshopRequest post\n\n{post['title']}\n{link}"
                 print(message)
                 send_telegram(message)
 
-        time.sleep(3)
+            time.sleep(1)
 
-    except Exception as e:
-        print("Loop error:", e)
-        time.sleep(10)
+        except Exception as e:
+            print("Error:", e)
+            time.sleep(5)
+
+Thread(target=monitor).start()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
